@@ -1,0 +1,55 @@
+name: Android (Capacitor .apk)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - run: npm ci
+      - run: npm run build
+      - run: npx cap sync android
+      - name: APK signé (release)
+        if: env.ANDROID_KEYSTORE_BASE64 != ''
+        working-directory: android
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/release.jks"
+          ./gradlew assembleRelease --no-daemon
+          mkdir -p ../apk && cp app/build/outputs/apk/release/*.apk ../apk/lam-code-release.apk
+      - name: APK debug (aucun secret de signature)
+        if: env.ANDROID_KEYSTORE_BASE64 == ''
+        working-directory: android
+        run: |
+          ./gradlew assembleDebug --no-daemon
+          mkdir -p ../apk && cp app/build/outputs/apk/debug/*.apk ../apk/lam-code-debug.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lam-code-android
+          path: apk/*.apk
+      - name: Publier la release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apk/*.apk
