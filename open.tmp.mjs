@@ -1,0 +1,10 @@
+import { chromium } from 'playwright';
+const browser = await chromium.connectOverCDP('http://localhost:29229');
+const ctx = browser.contexts()[0];
+const page = await ctx.newPage();
+await page.goto('https://aistudio.google.com/apikey', { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.bringToFront();
+await page.waitForTimeout(3000);
+console.log('URL', page.url(), 'TITLE', await page.title());
+await page.screenshot({ path: '/tmp/aistudio.png' });
+process.exit(0);

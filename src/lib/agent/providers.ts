@@ -28,8 +28,8 @@ export const PROVIDERS: Record<ProviderId, ProviderInfo> = {
   google: {
     id: 'google',
     label: 'Google Gemini',
-    defaultModel: 'gemini-2.0-flash',
-    models: ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-pro'],
+    defaultModel: 'gemini-2.5-flash',
+    models: ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.0-flash'],
     multimodal: () => true,
     keyUrl: 'https://aistudio.google.com/app/apikey',
     serverEnv: 'GOOGLE_GENERATIVE_AI_API_KEY',
