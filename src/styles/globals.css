@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --panel: 240 5% 97%;
+    --sidebar: 240 5% 95%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 199 89% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 4.8% 92%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 92%;
+    --muted-foreground: 240 3.8% 40%;
+    --accent: 240 4.8% 90%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 86%;
+    --input: 240 5.9% 86%;
+    --ring: 199 89% 48%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 240 6% 10%;
+    --foreground: 0 0% 92%;
+    --panel: 240 6% 12%;
+    --sidebar: 240 6% 8%;
+    --card: 240 6% 12%;
+    --card-foreground: 0 0% 92%;
+    --popover: 240 6% 12%;
+    --popover-foreground: 0 0% 92%;
+    --primary: 199 89% 55%;
+    --primary-foreground: 240 6% 8%;
+    --secondary: 240 4% 18%;
+    --secondary-foreground: 0 0% 92%;
+    --muted: 240 4% 18%;
+    --muted-foreground: 240 5% 62%;
+    --accent: 240 4% 20%;
+    --accent-foreground: 0 0% 95%;
+    --destructive: 0 63% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 4% 20%;
+    --input: 240 4% 22%;
+    --ring: 199 89% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      Inter,
+      system-ui,
+      -apple-system,
+      'Segoe UI',
+      Roboto,
+      sans-serif;
+    overscroll-behavior: none;
+  }
+}
+
+.markdown pre {
+  @apply my-2 overflow-x-auto rounded-md bg-black/40 p-3 text-xs;
+}
+.markdown code:not(pre code) {
+  @apply rounded bg-muted px-1 py-0.5 text-[0.85em];
+}
+.markdown p {
+  @apply my-1.5 leading-relaxed;
+}
+.markdown ul {
+  @apply my-1.5 list-disc pl-5;
+}
+.markdown ol {
+  @apply my-1.5 list-decimal pl-5;
+}
+.markdown a {
+  @apply text-primary underline;
+}
+.markdown h1,
+.markdown h2,
+.markdown h3 {
+  @apply mb-1 mt-3 font-semibold;
+}
+.markdown table {
+  @apply my-2 border-collapse text-xs;
+}
+.markdown th,
+.markdown td {
+  @apply border border-border px-2 py-1;
+}
+
+.xterm {
+  height: 100%;
+  padding: 4px 8px;
+}
