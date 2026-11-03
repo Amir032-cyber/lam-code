@@ -15,4 +15,10 @@ describe('snapshots zip', () => {
     expect(back.files.find((f) => f.path === 'logo.png')).toMatchObject({ encoding: 'base64', content: 'iVBORw0KGgo=' });
     expect(back.dirs).toContain('empty');
   });
+
+  it('conserve les octets d’un binaire à extension inconnue', async () => {
+    const blob = await zipProject({ dirs: [], files: [makeFile('assets/model.bin', '//4AAQ==', 'base64')] });
+    const back = await unzipProject(await blob.arrayBuffer());
+    expect(back.files[0]).toMatchObject({ path: 'assets/model.bin', encoding: 'base64', content: '//4AAQ==' });
+  });
 });

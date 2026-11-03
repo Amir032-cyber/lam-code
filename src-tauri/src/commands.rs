@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 
 use crate::policy::check_command;
 use crate::workspace::{relative, resolve, root, IGNORED_DIRS, MAX_FILES, MAX_FILE_BYTES};
@@ -55,10 +56,79 @@ struct OutputEvent {
 struct Running {
     child: Mutex<Child>,
     cancelled: AtomicBool,
+    detached: AtomicBool,
 }
 
 #[derive(Default)]
 pub struct Processes(Mutex<HashMap<String, Arc<Running>>>);
+
+impl Processes {
+    /// Arrête tous les processus (fermeture de l'application).
+    pub fn kill_all(&self) {
+        if let Ok(map) = self.0.lock() {
+            for running in map.values() {
+                if let Ok(mut child) = running.child.lock() {
+                    kill_tree(&mut child);
+                }
+            }
+        }
+    }
+}
+
+/// Dossiers de travail autorisés : uniquement ceux choisis par l'utilisateur dans la boîte de dialogue native.
+/// Le frontend ne peut pas en ajouter lui-même ; la liste est conservée dans le dossier de données de l'app.
+#[derive(Default)]
+pub struct Workspaces(Mutex<HashSet<PathBuf>>);
+
+fn workspaces_file(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|d| d.join("workspaces.json"))
+}
+
+impl Workspaces {
+    pub fn load(app: &AppHandle) -> Self {
+        let set = workspaces_file(app)
+            .and_then(|f| fs::read_to_string(f).ok())
+            .and_then(|text| serde_json::from_str::<Vec<PathBuf>>(&text).ok())
+            .unwrap_or_default();
+        Workspaces(Mutex::new(set.into_iter().collect()))
+    }
+
+    fn check(&self, workspace: &str) -> Result<(), String> {
+        let canonical = root(workspace)?;
+        let set = self.0.lock().map_err(|e| e.to_string())?;
+        if set.contains(&canonical) {
+            Ok(())
+        } else {
+            Err("Dossier de travail non autorisé : choisissez-le via « Choisir un dossier ».".into())
+        }
+    }
+}
+
+/// Ouvre la boîte de dialogue native, autorise le dossier choisi et renvoie son chemin.
+#[tauri::command]
+pub async fn pick_workspace(app: AppHandle, workspaces: State<'_, Workspaces>) -> Result<Option<String>, String> {
+    let handle = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        handle.dialog().file().set_title("Dossier de travail LAM-Code").blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else { return Ok(None) };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    let canonical = root(&path.to_string_lossy())?;
+    let list: Vec<PathBuf> = {
+        let mut set = workspaces.0.lock().map_err(|e| e.to_string())?;
+        set.insert(canonical.clone());
+        set.iter().cloned().collect()
+    };
+    if let Some(file) = workspaces_file(&app) {
+        if let Some(parent) = file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let _ = fs::write(file, serde_json::to_string(&list).unwrap_or_default());
+    }
+    Ok(Some(canonical.to_string_lossy().into_owned()))
+}
 
 fn mime_for(path: &str) -> &'static str {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -129,7 +199,8 @@ fn walk(root: &Path, dir: &Path, out: &mut ProjectFiles) -> Result<(), String> {
 
 /// Charge les fichiers du dossier de travail (hors node_modules, .git, target…).
 #[tauri::command]
-pub fn fs_load(workspace: String) -> Result<ProjectFiles, String> {
+pub fn fs_load(workspaces: State<'_, Workspaces>, workspace: String) -> Result<ProjectFiles, String> {
+    workspaces.check(&workspace)?;
     let root = root(&workspace)?;
     let mut out = ProjectFiles { files: Vec::new(), dirs: Vec::new() };
     walk(&root, &root, &mut out)?;
@@ -137,7 +208,14 @@ pub fn fs_load(workspace: String) -> Result<ProjectFiles, String> {
 }
 
 #[tauri::command]
-pub fn fs_write(workspace: String, path: String, content: String, encoding: String) -> Result<(), String> {
+pub fn fs_write(
+    workspaces: State<'_, Workspaces>,
+    workspace: String,
+    path: String,
+    content: String,
+    encoding: String,
+) -> Result<(), String> {
+    workspaces.check(&workspace)?;
     let target = resolve(&workspace, &path)?;
     if let Some(parent) = target.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -153,7 +231,8 @@ pub fn fs_write(workspace: String, path: String, content: String, encoding: Stri
 }
 
 #[tauri::command]
-pub fn fs_remove(workspace: String, path: String) -> Result<(), String> {
+pub fn fs_remove(workspaces: State<'_, Workspaces>, workspace: String, path: String) -> Result<(), String> {
+    workspaces.check(&workspace)?;
     let target = resolve(&workspace, &path)?;
     if target == root(&workspace)? {
         return Err("Suppression du dossier de travail refusée".into());
@@ -168,7 +247,8 @@ pub fn fs_remove(workspace: String, path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn fs_rename(workspace: String, from: String, to: String) -> Result<(), String> {
+pub fn fs_rename(workspaces: State<'_, Workspaces>, workspace: String, from: String, to: String) -> Result<(), String> {
+    workspaces.check(&workspace)?;
     let source = resolve(&workspace, &from)?;
     let dest = resolve(&workspace, &to)?;
     if let Some(parent) = dest.parent() {
@@ -178,7 +258,8 @@ pub fn fs_rename(workspace: String, from: String, to: String) -> Result<(), Stri
 }
 
 #[tauri::command]
-pub fn fs_mkdir(workspace: String, path: String) -> Result<(), String> {
+pub fn fs_mkdir(workspaces: State<'_, Workspaces>, workspace: String, path: String) -> Result<(), String> {
+    workspaces.check(&workspace)?;
     fs::create_dir_all(resolve(&workspace, &path)?).map_err(|e| e.to_string())
 }
 
@@ -258,6 +339,7 @@ fn pump(
 pub async fn run_command(
     app: AppHandle,
     processes: State<'_, Processes>,
+    workspaces: State<'_, Workspaces>,
     id: String,
     cmd: String,
     cwd: Option<String>,
@@ -265,6 +347,7 @@ pub async fn run_command(
     timeout_ms: Option<u64>,
     max_output_bytes: Option<usize>,
 ) -> Result<CommandResult, String> {
+    workspaces.check(&workspace)?;
     check_command(&cmd)?;
     let dir = resolve(&workspace, cwd.as_deref().unwrap_or(""))?;
     if !dir.is_dir() {
@@ -293,7 +376,11 @@ pub async fn run_command(
         .take()
         .map(|s| pump(app.clone(), id.clone(), "stderr", s, stderr_buf.clone(), limit));
 
-    let running = Arc::new(Running { child: Mutex::new(child), cancelled: AtomicBool::new(false) });
+    let running = Arc::new(Running {
+        child: Mutex::new(child),
+        cancelled: AtomicBool::new(false),
+        detached: AtomicBool::new(false),
+    });
     processes.0.lock().map_err(|e| e.to_string())?.insert(id.clone(), running.clone());
 
     let waiter = running.clone();
@@ -308,7 +395,7 @@ pub async fn run_command(
                 let _ = child.wait();
                 return Err(130);
             }
-            if started.elapsed() >= timeout {
+            if !waiter.detached.load(Ordering::SeqCst) && started.elapsed() >= timeout {
                 kill_tree(&mut child);
                 let _ = child.wait();
                 return Err(124);
@@ -340,6 +427,15 @@ pub async fn run_command(
         }
     };
     Ok(CommandResult { exit_code, stdout, stderr, duration_ms: started.elapsed().as_millis() as u64 })
+}
+
+/// Serveur de développement détecté : il continue au-delà du délai, jusqu'à annulation ou fermeture de l'app.
+#[tauri::command]
+pub fn detach_command(processes: State<'_, Processes>, id: String) -> Result<(), String> {
+    if let Some(running) = processes.0.lock().map_err(|e| e.to_string())?.get(&id) {
+        running.detached.store(true, Ordering::SeqCst);
+    }
+    Ok(())
 }
 
 #[tauri::command]

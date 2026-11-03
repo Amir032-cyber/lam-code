@@ -1,4 +1,4 @@
-import { VirtualFS, makeFile, type VfsChange } from '../fs/vfs';
+import { VirtualFS, makeFile, type ProjectFiles, type VfsChange } from '../fs/vfs';
 import { listProjects, saveProjectMeta, deleteProjectMeta, type ProjectMeta } from '../fs/persist';
 import type { PlatformAdapter } from '../platform/types';
 import { normalizePath } from '../fs/paths';
@@ -141,6 +141,37 @@ export class ProjectStore {
     }
   }
 
+  /** Remplace tous les fichiers du projet (restauration de snapshot), suppressions comprises, puis persiste. */
+  async restoreFiles(files: ProjectFiles) {
+    const project = this.state.project;
+    if (!project) return;
+    await this.flush();
+    if (project.workspacePath || this.platform.id === 'mobile') {
+      const current = this.vfs.snapshot();
+      const keepFiles = new Set(files.files.map((f) => f.path));
+      const keepDirs = new Set([...files.dirs, ...files.files.flatMap((f) => parentDirs(f.path))]);
+      for (const file of current.files) {
+        if (!keepFiles.has(file.path)) await this.platform.fs.remove(project, file.path);
+      }
+      for (const dir of [...current.dirs].sort((a, b) => b.length - a.length)) {
+        if (!keepDirs.has(dir)) await this.platform.fs.remove(project, dir);
+      }
+    }
+    await this.platform.fs.saveProject(project, files);
+    this.vfs.load(files);
+    const keep = new Set(files.files.map((f) => f.path));
+    const openTabs = this.state.openTabs.filter((t) => keep.has(t));
+    const meta = { ...project, updatedAt: Date.now() };
+    await saveProjectMeta(meta);
+    this.set({
+      project: meta,
+      openTabs,
+      dirty: {},
+      activeFile: this.state.activeFile && keep.has(this.state.activeFile) ? this.state.activeFile : (openTabs.at(-1) ?? null),
+      error: null,
+    });
+  }
+
   async init() {
     const projects = await listProjects();
     const lastId = localStorage.getItem('lam:lastProject');
@@ -272,4 +303,9 @@ export class ProjectStore {
   clearError() {
     this.set({ error: null });
   }
+}
+
+function parentDirs(path: string): string[] {
+  const parts = path.split('/');
+  return parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join('/'));
 }

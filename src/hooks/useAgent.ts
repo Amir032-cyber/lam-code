@@ -8,7 +8,7 @@ import { FailureTracker, MAX_STEPS } from '@/lib/agent/policy';
 import { APPROVAL_TOOLS, type AgentToolName } from '@/lib/agent/toolDefs';
 import { PROVIDERS } from '@/lib/agent/providers';
 import { loadAllowed, saveAllowed, type AllowedTools } from '@/lib/settings';
-import { kvGet, kvSet } from '@/lib/fs/persist';
+import { chatKey, kvGet, kvSet } from '@/lib/fs/persist';
 import { extractText } from '@/lib/ingest/extract';
 
 export interface PendingCall {
@@ -17,7 +17,6 @@ export interface PendingCall {
   input: Record<string, unknown>;
 }
 
-const chatKey = (projectId: string) => `lam:chat:${projectId}`;
 
 export function toTerminal(text: string): string {
   return text.replace(/\r?\n/g, '\r\n');

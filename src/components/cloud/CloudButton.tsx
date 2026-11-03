@@ -154,8 +154,7 @@ export function CloudButton({ cloud }: { cloud: Cloud }) {
                         onClick={() =>
                           window.confirm('Remplacer les fichiers du projet par ce snapshot ?') &&
                           void run(async () => {
-                            store.vfs.load(await restoreSnapshot(s));
-                            await store.flush();
+                            await store.restoreFiles(await restoreSnapshot(s));
                             setMessage('Snapshot restauré.');
                           })
                         }

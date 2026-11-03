@@ -34,10 +34,21 @@ pub fn resolve(workspace: &str, relative: &str) -> Result<PathBuf, String> {
     if !out.starts_with(&root) {
         return Err(format!("Chemin hors du projet : {relative}"));
     }
-    // Refuse les liens symboliques qui sortent du dossier de travail.
-    if let Ok(real) = out.canonicalize() {
-        if !real.starts_with(&root) {
-            return Err(format!("Lien hors du projet refusé : {relative}"));
+    // Refuse les liens symboliques (sur la cible ou un dossier parent) qui sortent du dossier de travail.
+    let mut probe = out.as_path();
+    loop {
+        if std::fs::symlink_metadata(probe).is_ok() {
+            let real = probe
+                .canonicalize()
+                .map_err(|_| format!("Lien symbolique invalide refusé : {relative}"))?;
+            if !real.starts_with(&root) {
+                return Err(format!("Lien hors du projet refusé : {relative}"));
+            }
+            break;
+        }
+        match probe.parent() {
+            Some(parent) => probe = parent,
+            None => break,
         }
     }
     Ok(out)
@@ -73,5 +84,22 @@ mod tests {
         assert!(resolve(&ws, "src/main.rs").is_ok());
         assert!(resolve(&ws, "/index.html").unwrap().starts_with(root(&ws).unwrap()));
         assert!(resolve("relatif", "a").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuse_un_parent_symbolique_hors_du_projet() {
+        let base = std::env::temp_dir().join(format!("lam-ws-{}", std::process::id()));
+        let ws = base.join("ws");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let _ = std::fs::remove_file(ws.join("lien"));
+        std::os::unix::fs::symlink(&outside, ws.join("lien")).unwrap();
+        let ws_str = ws.to_string_lossy().to_string();
+        assert!(resolve(&ws_str, "lien/nouveau/fichier.txt").is_err());
+        assert!(resolve(&ws_str, "lien").is_err());
+        assert!(resolve(&ws_str, "ok/nouveau.txt").is_ok());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

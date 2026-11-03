@@ -43,7 +43,8 @@ Commandes utiles : `npm run lint`, `npm test`, `npm run build`, `npm run test:e2
 1. Créez un projet sur [supabase.com](https://supabase.com).
 2. Exécutez `supabase/migrations/0001_init.sql` (SQL Editor ou `supabase db push`) : tables `projects`, `messages`,
    `snapshots`, bucket privé `snapshots`, RLS par utilisateur.
-3. Authentication → Providers : activez E-mail et GitHub (URL de redirection = URL de l'app).
+3. Authentication → Providers : activez E-mail et GitHub. Dans URL Configuration → Redirect URLs, ajoutez l'URL
+   de l'app Web et `com.lamcode.app://auth-callback` (retour OAuth sur Android).
 4. Renseignez `VITE_SUPABASE_URL` et `VITE_SUPABASE_ANON_KEY`. Sans ces variables, l'app fonctionne en local.
 
 ## 5. Clés d'IA

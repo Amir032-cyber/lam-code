@@ -1,5 +1,7 @@
 import { createClient, type Session, type SupabaseClient } from '@supabase/supabase-js';
-import { listProjects, saveProjectFiles, saveProjectMeta, type ProjectMeta } from '@/lib/fs/persist';
+import { App } from '@capacitor/app';
+import { Capacitor } from '@capacitor/core';
+import { chatKey, kvGet, kvSet, listProjects, saveProjectFiles, saveProjectMeta, type ProjectMeta } from '@/lib/fs/persist';
 import type { ProjectFiles } from '@/lib/fs/vfs';
 import { uid } from '@/lib/utils';
 import { unzipProject, zipProject } from './zip';
@@ -8,8 +10,20 @@ const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 /** Client Supabase, ou null si l'application fonctionne en mode local uniquement. */
-export const supabase: SupabaseClient | null = url && anonKey ? createClient(url, anonKey) : null;
+export const supabase: SupabaseClient | null =
+  url && anonKey ? createClient(url, anonKey, { auth: { flowType: 'pkce', detectSessionInUrl: true } }) : null;
 export const cloudEnabled = supabase !== null;
+
+/** Retour OAuth sur Android : lien profond enregistré dans AndroidManifest.xml (à autoriser dans Supabase). */
+export const NATIVE_REDIRECT_URL = 'com.lamcode.app://auth-callback';
+
+if (supabase && Capacitor.isNativePlatform()) {
+  void App.addListener('appUrlOpen', ({ url: opened }) => {
+    if (!opened.startsWith(NATIVE_REDIRECT_URL)) return;
+    const code = new URL(opened).searchParams.get('code');
+    if (code) void supabase?.auth.exchangeCodeForSession(code);
+  });
+}
 
 function client(): SupabaseClient {
   if (!supabase) throw new Error('Synchronisation désactivée : VITE_SUPABASE_URL et VITE_SUPABASE_ANON_KEY ne sont pas configurés.');
@@ -48,11 +62,14 @@ export async function signUp(email: string, password: string): Promise<boolean> 
 }
 
 export async function signInWithGitHub() {
-  const { error } = await client().auth.signInWithOAuth({
+  const native = Capacitor.isNativePlatform();
+  const { data, error } = await client().auth.signInWithOAuth({
     provider: 'github',
-    options: { redirectTo: window.location.origin },
+    options: { redirectTo: native ? NATIVE_REDIRECT_URL : window.location.origin, skipBrowserRedirect: native },
   });
   if (error) throw error;
+  // Android : Capacitor ouvre les URL externes dans le navigateur système, qui revient via le lien profond.
+  if (native && data.url) window.location.href = data.url;
 }
 
 export async function signOut() {
@@ -70,24 +87,42 @@ export async function pushProject(meta: ProjectMeta, files: ProjectFiles): Promi
   return (data as { id: string }).id;
 }
 
-/** Récupère les projets distants plus récents que leur copie locale. Renvoie le nombre importé. */
-export async function pullProjects(): Promise<number> {
-  const { data, error } = await client().from('projects').select('id, local_id, name, files, created_at, updated_at');
+interface RemoteProject {
+  id: string;
+  local_id: string;
+  name: string;
+  files: ProjectFiles;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SyncReport {
+  imported: number;
+  uploaded: number;
+}
+
+/**
+ * Réconciliation complète à la connexion : importe les projets distants plus récents (fichiers + conversation)
+ * et envoie les projets locaux absents ou plus récents côté serveur (dernier écrit gagne).
+ */
+export async function syncAll(loadFiles: (meta: ProjectMeta) => Promise<ProjectFiles>): Promise<SyncReport> {
+  const db = client();
+  const { data, error } = await db.from('projects').select('id, local_id, name, files, created_at, updated_at');
   if (error) throw error;
+  const remote = new Map(((data ?? []) as RemoteProject[]).map((row) => [row.local_id, row]));
+  const { data: chats, error: chatError } = await db.from('messages').select('project_id, content');
+  if (chatError) throw chatError;
+  const chatByRemoteId = new Map(((chats ?? []) as { project_id: string; content: unknown[] }[]).map((c) => [c.project_id, c.content]));
   const local = new Map((await listProjects()).map((p) => [p.id, p]));
-  let imported = 0;
-  for (const row of (data ?? []) as {
-    id: string;
-    local_id: string;
-    name: string;
-    files: ProjectFiles;
-    created_at: string;
-    updated_at: string;
-  }[]) {
+  const report: SyncReport = { imported: 0, uploaded: 0 };
+
+  for (const row of remote.values()) {
     const remoteUpdated = Date.parse(row.updated_at);
     const existing = local.get(row.local_id);
     if (existing && existing.updatedAt >= remoteUpdated) continue;
     await saveProjectFiles(row.local_id, row.files);
+    const chat = chatByRemoteId.get(row.id);
+    if (chat) await kvSet(chatKey(row.local_id), chat);
     await saveProjectMeta({
       ...(existing ?? {}),
       id: row.local_id,
@@ -96,17 +131,26 @@ export async function pullProjects(): Promise<number> {
       updatedAt: remoteUpdated,
       remoteId: row.id,
     });
-    imported++;
+    report.imported++;
   }
-  return imported;
+
+  for (const meta of local.values()) {
+    const row = remote.get(meta.id);
+    if (row && Date.parse(row.updated_at) >= meta.updatedAt) continue;
+    const remoteId = await pushProject(meta, await loadFiles(meta));
+    const chat = await kvGet<unknown[]>(chatKey(meta.id));
+    if (chat?.length) await pushMessages(remoteId, chat);
+    if (meta.remoteId !== remoteId) await saveProjectMeta({ ...meta, remoteId });
+    report.uploaded++;
+  }
+  return report;
 }
 
+/** Une conversation par projet, remplacée atomiquement (upsert) : aucun historique perdu en cas d'échec. */
 export async function pushMessages(remoteId: string, messages: unknown[]) {
-  const db = client();
-  const { error: deleteError } = await db.from('messages').delete().eq('project_id', remoteId);
-  if (deleteError) throw deleteError;
-  if (messages.length === 0) return;
-  const { error } = await db.from('messages').insert({ project_id: remoteId, content: messages });
+  const { error } = await client()
+    .from('messages')
+    .upsert({ project_id: remoteId, content: messages }, { onConflict: 'project_id' });
   if (error) throw error;
 }
 

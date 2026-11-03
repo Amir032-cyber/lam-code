@@ -17,11 +17,27 @@ export async function unzipProject(data: Blob | ArrayBuffer): Promise<ProjectFil
     if (!path) continue;
     if (entry.dir) {
       out.dirs.push(path);
-    } else if (isBinaryPath(path)) {
-      out.files.push(makeFile(path, await entry.async('base64'), 'base64'));
     } else {
-      out.files.push(makeFile(path, await entry.async('string')));
+      const bytes = await entry.async('uint8array');
+      const text = isBinaryPath(path) ? null : decodeUtf8(bytes);
+      out.files.push(text === null ? makeFile(path, toBase64(bytes), 'base64') : makeFile(path, text));
     }
   }
   return out;
+}
+
+/** Texte UTF-8 valide (sans octet nul), sinon null : le fichier est alors conservé en base64. */
+function decodeUtf8(bytes: Uint8Array): string | null {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return text.includes('\0') ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(binary);
 }
