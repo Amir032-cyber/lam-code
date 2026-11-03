@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
 import type { ProjectMeta } from '../fs/persist';
 import type { ProjectFiles, VFile } from '../fs/vfs';
 import { uid } from '../utils';
@@ -65,6 +64,7 @@ class TauriFs implements FileSystemAdapter {
 class TauriExec implements ExecAdapter {
   description = 'Shell local (PowerShell) dans le dossier de travail';
   private listeners = new Set<(url: string, port: number) => void>();
+  private servers = new Set<string>();
 
   onServerReady(listener: (url: string, port: number) => void) {
     this.listeners.add(listener);
@@ -108,21 +108,44 @@ class TauriExec implements ExecAdapter {
         serverReady.then((url) => ({ kind: 'server' as const, url })),
       ]);
       if (outcome.kind === 'server') {
+        // Un seul serveur de dev à la fois ; il survit au délai et s'arrête à la fermeture de l'app.
+        for (const previous of this.servers) void invoke('cancel_command', { id: previous });
+        this.servers.clear();
+        this.servers.add(id);
+        void done.finally(() => this.servers.delete(id));
+        await invoke('detach_command', { id });
+        const after = await invoke<ProjectFiles>('fs_load', { workspace: ws });
         return {
           exitCode: 0,
           stdout: `${seen}\n[Serveur de dev démarré en arrière-plan : ${outcome.url} — aperçu ouvert]`,
           stderr: '',
           durationMs: Date.now() - started,
-          changedFiles: (await invoke<ProjectFiles>('fs_load', { workspace: ws })).files,
+          changedFiles: after.files,
+          removedPaths: removedPaths(options.files, after),
         };
       }
       const after = await invoke<ProjectFiles>('fs_load', { workspace: ws });
-      return { ...outcome.result, changedFiles: after.files };
+      return { ...outcome.result, changedFiles: after.files, removedPaths: removedPaths(options.files, after) };
     } finally {
       options.signal.removeEventListener('abort', onAbort);
       unlisten();
     }
   }
+}
+
+const IGNORED_DIRS = new Set(['node_modules', '.git', 'target', 'dist', 'build', '.next', '.venv', '__pycache__']);
+const MAX_SCANNED_FILES = 2000;
+const MAX_SCANNED_BYTES = 1024 * 1024;
+
+/** Fichiers présents avant la commande et absents du disque après (hors dossiers ignorés par fs_load). */
+export function removedPaths(before: ProjectFiles, after: ProjectFiles): string[] {
+  if (after.files.length >= MAX_SCANNED_FILES) return [];
+  const present = new Set([...after.files.map((f) => f.path), ...after.dirs]);
+  const scanned = (path: string) => !path.split('/').some((part) => IGNORED_DIRS.has(part));
+  return [
+    ...before.files.filter((f) => f.size <= MAX_SCANNED_BYTES && scanned(f.path) && !present.has(f.path)).map((f) => f.path),
+    ...before.dirs.filter((d) => scanned(d) && !present.has(d)),
+  ];
 }
 
 /** Clés stockées dans le Gestionnaire d'identifiants Windows (crate keyring). */
@@ -149,9 +172,7 @@ export function createTauriPlatform(): PlatformAdapter {
     secrets: new KeyringSecrets(),
     getExec: () => exec,
     execUnavailableReason: () => 'choisissez un dossier de travail pour ce projet.',
-    async pickWorkspace() {
-      const selected = await open({ directory: true, multiple: false, title: 'Dossier de travail LAM-Code' });
-      return typeof selected === 'string' ? selected : null;
-    },
+    // Boîte de dialogue native côté Rust : seul un dossier choisi ici est autorisé pour les commandes fs/shell.
+    pickWorkspace: () => invoke<string | null>('pick_workspace'),
   };
 }

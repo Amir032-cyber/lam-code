@@ -56,3 +56,6 @@ export async function kvSet<T>(key: string, value: T): Promise<void> {
 export async function kvDel(key: string): Promise<void> {
   await del(key, db());
 }
+
+/** Clé IndexedDB de la conversation d'un projet. */
+export const chatKey = (projectId: string) => `lam:chat:${projectId}`;

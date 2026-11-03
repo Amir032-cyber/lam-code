@@ -14,7 +14,7 @@ export interface Settings {
 const KEY = 'lam:settings';
 
 export const DEFAULT_SETTINGS: Settings = {
-  provider: 'groq',
+  provider: 'google',
   models: {
     groq: PROVIDERS.groq.defaultModel,
     google: PROVIDERS.google.defaultModel,
